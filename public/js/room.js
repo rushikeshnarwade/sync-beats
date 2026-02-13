@@ -449,6 +449,24 @@ function setupEventListeners() {
         });
         localStorage.setItem('syncbeats-playlists', JSON.stringify(playlists));
         showToast(`💾 "${name}" saved! (${queue.length} songs)`, 'success');
+        location.reload();
+    });
+
+    // Background Mode Toggle (Mobile)
+    const bgModeBtn = document.getElementById('bg-mode-btn');
+    const silentAudio = document.getElementById('silent-audio');
+
+    bgModeBtn.addEventListener('click', () => {
+        const isActive = bgModeBtn.classList.toggle('active');
+
+        if (isActive) {
+            silentAudio.play().catch(e => console.error('Silent audio failed:', e));
+            initBackgroundAudio(); // Ensure AudioContext is also active
+            showToast('Background Mode Enabled: Audio will keep playing when screen is off', 'success');
+        } else {
+            silentAudio.pause();
+            showToast('Background Mode Disabled', 'info');
+        }
     });
 
     // Player controls

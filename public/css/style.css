@@ -1381,4 +1381,62 @@ input[type="text"]:focus {
     .sidebar-panel {
         padding: 12px;
     }
+
+    /* Mobile Player Controls */
+    .player-controls {
+        gap: 12px;
+        justify-content: center;
+        margin-top: 4px;
+    }
+
+    .control-btn {
+        width: 48px;
+        height: 48px;
+    }
+
+    .control-btn svg {
+        width: 24px;
+        height: 24px;
+    }
+
+    .control-btn-main {
+        width: 64px;
+        height: 64px;
+    }
+
+    .control-btn-main svg {
+        width: 32px;
+        height: 32px;
+    }
+
+    .now-playing {
+        flex-direction: column;
+        text-align: center;
+        gap: 12px;
+    }
+
+    .now-playing-info {
+        align-items: center;
+    }
+
+    #bg-mode-btn {
+        position: absolute;
+        top: 16px;
+        right: 16px;
+        background: rgba(0, 0, 0, 0.4);
+        width: 36px;
+        height: 36px;
+    }
+}
+
+/* ── Background Mode Active State ──────────────────────────────── */
+#bg-mode-btn.active {
+    background: rgba(34, 197, 94, 0.2);
+    color: var(--accent-green);
+    border: 1px solid rgba(34, 197, 94, 0.4);
+    box-shadow: 0 0 15px rgba(34, 197, 94, 0.2);
+}
+
+#bg-mode-btn.active svg {
+    filter: drop-shadow(0 0 5px rgba(34, 197, 94, 0.5));
 }
