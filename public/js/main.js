@@ -2,8 +2,7 @@
 const socket = io();
 
 const usernameInput = document.getElementById('username-input');
-const createBtn = document.getElementById('create-room-btn');
-const joinBtn = document.getElementById('join-room-btn');
+const goBtn = document.getElementById('go-btn');
 const roomCodeInput = document.getElementById('room-code-input');
 const errorToast = document.getElementById('error-toast');
 
@@ -26,10 +25,20 @@ if (savedName) {
     usernameInput.focus();
 }
 
-// Auto-uppercase room code
+// Auto-uppercase room code + update button label dynamically
 roomCodeInput.addEventListener('input', () => {
     roomCodeInput.value = roomCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    updateButtonLabel();
 });
+
+function updateButtonLabel() {
+    const code = roomCodeInput.value.trim();
+    const span = goBtn.querySelector('span');
+    span.textContent = code.length > 0 ? 'Join Room' : 'Create Room';
+}
+
+// Set label on load
+updateButtonLabel();
 
 function getUsername() {
     const name = usernameInput.value.trim();
@@ -48,70 +57,67 @@ function showError(msg) {
     errorToast._timer = setTimeout(() => errorToast.classList.add('hidden'), 3000);
 }
 
-// Create Room
-createBtn.addEventListener('click', () => {
-    const username = getUsername();
-    if (!username) return;
+// Smart button: create or join based on room code
+goBtn.addEventListener('click', handleGo);
 
-    createBtn.disabled = true;
-    createBtn.querySelector('span').textContent = 'Creating...';
-
-    socket.emit('create-room', { username }, (response) => {
-        if (response.success) {
-            // Store username for room page
-            sessionStorage.setItem('syncbeats-username', username);
-            localStorage.setItem('syncbeats-username', username);
-            sessionStorage.setItem('syncbeats-action', 'create');
-            window.location.href = `/room.html?room=${response.code}`;
-        } else {
-            showError('Failed to create room. Try again.');
-            createBtn.disabled = false;
-            createBtn.querySelector('span').textContent = 'Create Room';
-        }
-    });
-});
-
-// Join Room
-joinBtn.addEventListener('click', attemptJoin);
-roomCodeInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') attemptJoin();
-});
-
-function attemptJoin() {
+function handleGo() {
     const username = getUsername();
     if (!username) return;
 
     const code = roomCodeInput.value.trim().toUpperCase();
-    if (!code || code.length < 4) {
-        showError('Please enter a valid room code');
-        roomCodeInput.focus();
-        return;
-    }
 
-    joinBtn.disabled = true;
-    joinBtn.querySelector('span').textContent = 'Joining...';
-
-    socket.emit('join-room', { username, code }, (response) => {
-        if (response.success) {
-            sessionStorage.setItem('syncbeats-username', username);
-            localStorage.setItem('syncbeats-username', username);
-            sessionStorage.setItem('syncbeats-action', 'join');
-            window.location.href = `/room.html?room=${code}`;
-        } else {
-            showError(response.error || 'Room not found');
-            joinBtn.disabled = false;
-            joinBtn.querySelector('span').textContent = 'Join';
+    if (code) {
+        // Join existing room
+        if (code.length < 4) {
+            showError('Room code must be at least 4 characters');
+            roomCodeInput.focus();
+            return;
         }
-    });
+
+        goBtn.disabled = true;
+        goBtn.querySelector('span').textContent = 'Joining...';
+
+        socket.emit('join-room', { username, code }, (response) => {
+            if (response.success) {
+                sessionStorage.setItem('syncbeats-username', username);
+                localStorage.setItem('syncbeats-username', username);
+                sessionStorage.setItem('syncbeats-action', 'join');
+                window.location.href = `/room.html?room=${code}`;
+            } else {
+                showError(response.error || 'Room not found');
+                goBtn.disabled = false;
+                updateButtonLabel();
+            }
+        });
+    } else {
+        // Create new room
+        goBtn.disabled = true;
+        goBtn.querySelector('span').textContent = 'Creating...';
+
+        socket.emit('create-room', { username }, (response) => {
+            if (response.success) {
+                sessionStorage.setItem('syncbeats-username', username);
+                localStorage.setItem('syncbeats-username', username);
+                sessionStorage.setItem('syncbeats-action', 'create');
+                window.location.href = `/room.html?room=${response.code}`;
+            } else {
+                showError('Failed to create room. Try again.');
+                goBtn.disabled = false;
+                updateButtonLabel();
+            }
+        });
+    }
 }
 
-// Allow Enter key on username to move to next action
+// Enter key handling
 usernameInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
-        if (roomCodeInput.value.trim()) {
-            attemptJoin();
-        } else {
+        if (usernameInput.value.trim()) {
             roomCodeInput.focus();
         }
     }
+});
+
+roomCodeInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleGo();
 });
