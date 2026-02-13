@@ -1,20 +1,23 @@
 // ── SyncBeats — Room Logic ──────────────────────────────────────
-// YouTube IFrame API + Socket.io sync + Queue + Chat
+// Direct iframe embed + YouTube IFrame JS API for state detection
+// + Socket.io sync + Queue + Chat
 
 const socket = io();
 
 // ── State ──────────────────────────────────────────────────────
-let player = null;
+let ytPlayer = null;        // YouTube JS API player instance
 let isPlayerReady = false;
-let isSyncing = false; // flag to prevent echo when receiving sync events
+let isSyncing = false;      // flag to prevent echo when receiving sync events
+let lastKnownTime = 0;      // track time to detect seeks
+let lastPlayerState = -1;   // track state changes
 let queue = [];
 let currentIndex = -1;
 let username = '';
 let roomCode = '';
 let unreadChat = 0;
 let activeTab = 'queue';
-let pendingState = null; // store state to apply once player is ready
 let currentVideoId = null;
+let seekCheckInterval = null;
 
 // ── DOM Elements ────────────────────────────────────────────────
 const roomCodeText = document.getElementById('room-code-text');
@@ -62,8 +65,8 @@ function init() {
 
     roomCodeText.textContent = roomCode;
 
-    // Initialize YouTube player using direct iframe embed (works on local IPs + mobile)
-    initPlayer();
+    // Load YouTube IFrame API for state detection
+    loadYouTubeAPI();
 
     // Join or create based on action
     if (action === 'create') {
@@ -71,7 +74,6 @@ function init() {
             if (response.success) {
                 roomCode = response.code;
                 roomCodeText.textContent = roomCode;
-                // Update URL without reload
                 window.history.replaceState(null, '', `/room.html?room=${roomCode}`);
                 addSystemMessage(`You created room ${roomCode}`);
                 updateUserList([username]);
@@ -81,7 +83,6 @@ function init() {
         socket.emit('join-room', { username, code: roomCode }, (response) => {
             if (response.success) {
                 addSystemMessage(`You joined room ${roomCode}`);
-                // Apply existing state
                 if (response.state) {
                     queue = response.state.queue || [];
                     currentIndex = response.state.currentIndex;
@@ -91,7 +92,9 @@ function init() {
                     if (currentIndex >= 0 && queue[currentIndex]) {
                         const startTime = response.state.currentTime || 0;
                         const shouldPlay = response.state.isPlaying;
-                        loadVideo(queue[currentIndex].videoId, startTime, shouldPlay);
+                        waitForAPI(() => {
+                            loadVideo(queue[currentIndex].videoId, startTime, shouldPlay);
+                        });
                     }
                 }
             } else {
@@ -105,45 +108,213 @@ function init() {
     setupSocketListeners();
 }
 
-// ── YouTube Player — Direct Iframe Embed ────────────────────────
-// Using direct iframe embed instead of YouTube IFrame JS API
-// Reason: YT IFrame JS API fails on local network IPs (192.168.x.x)
-// with "Video unavailable" because YouTube blocks the Referer header.
-// Direct embed iframes work regardless of the hosting origin.
+// ── YouTube IFrame API ─────────────────────────────────────────
+let ytAPIReady = false;
 
-function initPlayer() {
-    // Player is initialized on first video load
-    isPlayerReady = true;
+function loadYouTubeAPI() {
+    const tag = document.createElement('script');
+    tag.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(tag);
 }
+
+window.onYouTubeIframeAPIReady = function () {
+    ytAPIReady = true;
+    console.log('🎬 YouTube IFrame API loaded');
+};
+
+function waitForAPI(callback) {
+    if (ytAPIReady) {
+        callback();
+    } else {
+        const check = setInterval(() => {
+            if (ytAPIReady) {
+                clearInterval(check);
+                callback();
+            }
+        }, 200);
+    }
+}
+
+// ── Load Video ─────────────────────────────────────────────────
+// Uses YT.Player to create the player — gives us full event control
+// (state changes, current time, seek detection)
 
 function loadVideo(videoId, startTime = 0, autoplay = true) {
     playerPlaceholder.classList.add('hidden');
     currentVideoId = videoId;
 
-    // Build YouTube embed URL with all needed parameters
-    const params = new URLSearchParams({
-        autoplay: autoplay ? '1' : '0',
-        controls: '1',
-        modestbranding: '1',
-        rel: '0',
-        playsinline: '1',
-        start: Math.floor(startTime).toString(),
-        enablejsapi: '1',
-        iv_load_policy: '3',
-        fs: '1'
+    // Stop seek check interval from previous video
+    if (seekCheckInterval) {
+        clearInterval(seekCheckInterval);
+        seekCheckInterval = null;
+    }
+
+    // Destroy existing player
+    if (ytPlayer && typeof ytPlayer.destroy === 'function') {
+        try { ytPlayer.destroy(); } catch (e) { }
+        ytPlayer = null;
+    }
+
+    // Remove any leftover iframe
+    const existingIframe = playerContainer.querySelector('iframe');
+    if (existingIframe) existingIframe.remove();
+
+    // Ensure the target div exists
+    let targetDiv = document.getElementById('youtube-player');
+    if (!targetDiv) {
+        targetDiv = document.createElement('div');
+        targetDiv.id = 'youtube-player';
+        playerContainer.insertBefore(targetDiv, playerPlaceholder);
+    }
+
+    // Create player via YT.Player API
+    isPlayerReady = false;
+    ytPlayer = new YT.Player('youtube-player', {
+        width: '100%',
+        height: '100%',
+        videoId: videoId,
+        playerVars: {
+            autoplay: autoplay ? 1 : 0,
+            controls: 1,
+            modestbranding: 1,
+            rel: 0,
+            playsinline: 1,
+            start: Math.floor(startTime),
+            iv_load_policy: 3,
+            fs: 1,
+            origin: window.location.origin
+        },
+        events: {
+            onReady: (event) => {
+                isPlayerReady = true;
+                lastKnownTime = startTime;
+                lastPlayerState = autoplay ? YT.PlayerState.PLAYING : YT.PlayerState.CUED;
+                updatePlayPauseUI(autoplay);
+
+                // Start seek detection polling
+                startSeekDetection();
+                console.log('✅ Player ready, video:', videoId);
+            },
+            onStateChange: (event) => {
+                handleStateChange(event.data);
+            },
+            onError: (event) => {
+                console.warn('⚠️ YouTube error:', event.data);
+                handlePlayerError(event.data);
+            }
+        }
     });
 
-    const embedUrl = `https://www.youtube.com/embed/${videoId}?${params.toString()}`;
+    // Style the iframe when it's created
+    const observer = new MutationObserver(() => {
+        const iframe = playerContainer.querySelector('iframe');
+        if (iframe) {
+            iframe.style.borderRadius = '10px';
+            iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+            observer.disconnect();
+        }
+    });
+    observer.observe(playerContainer, { childList: true, subtree: true });
 
-    // Create or replace iframe
-    const existingIframe = playerContainer.querySelector('iframe');
-    if (existingIframe) {
-        existingIframe.remove();
+    // Update now playing title
+    const song = queue[currentIndex];
+    if (song) {
+        nowPlayingTitle.textContent = song.title;
     }
+    renderQueue();
+}
+
+// ── State Change Handler ────────────────────────────────────────
+function handleStateChange(state) {
+    if (isSyncing) return; // Don't emit if we're applying a sync event
+
+    if (state === YT.PlayerState.PLAYING) {
+        updatePlayPauseUI(true);
+        const currentTime = ytPlayer.getCurrentTime();
+        lastKnownTime = currentTime;
+        socket.emit('sync-play', { currentTime });
+    } else if (state === YT.PlayerState.PAUSED) {
+        updatePlayPauseUI(false);
+        const currentTime = ytPlayer.getCurrentTime();
+        lastKnownTime = currentTime;
+        socket.emit('sync-pause', { currentTime });
+    } else if (state === YT.PlayerState.ENDED) {
+        // Auto-play next in queue
+        if (currentIndex < queue.length - 1) {
+            socket.emit('next-song');
+        }
+    }
+
+    lastPlayerState = state;
+}
+
+// ── Seek Detection ──────────────────────────────────────────────
+// YouTube doesn't fire a "seek" event, so we poll getCurrentTime()
+// and detect jumps > 2 seconds that aren't natural playback progression
+
+function startSeekDetection() {
+    if (seekCheckInterval) clearInterval(seekCheckInterval);
+
+    seekCheckInterval = setInterval(() => {
+        if (!isPlayerReady || !ytPlayer || isSyncing) return;
+
+        try {
+            const currentTime = ytPlayer.getCurrentTime();
+            const playerState = ytPlayer.getPlayerState();
+
+            // Only detect seeks while playing
+            if (playerState === YT.PlayerState.PLAYING) {
+                const expectedTime = lastKnownTime + 1; // ~1 second per check
+                const timeDiff = Math.abs(currentTime - expectedTime);
+
+                if (timeDiff > 3) {
+                    // User seeked! Emit sync-seek
+                    console.log(`⏩ Seek detected: ${lastKnownTime.toFixed(1)}s → ${currentTime.toFixed(1)}s`);
+                    socket.emit('sync-seek', { currentTime });
+                }
+            }
+
+            lastKnownTime = currentTime;
+        } catch (e) {
+            // Player might not be ready
+        }
+    }, 1000); // Check every second
+}
+
+// ── Error Handling ──────────────────────────────────────────────
+function handlePlayerError(errorCode) {
+    const song = queue[currentIndex];
+    if (!song) return;
+
+    if (errorCode === 101 || errorCode === 150) {
+        showToast('This video blocks embedding. Try another URL.', 'info');
+    } else if (errorCode === 100) {
+        showToast('Video not found or removed.', 'info');
+    } else {
+        // Fallback: try loading via direct iframe embed
+        showToast('Retrying with fallback player...', 'info');
+        loadVideoFallback(song.videoId);
+    }
+}
+
+// Fallback: direct iframe embed (works on local IPs where YT API fails)
+function loadVideoFallback(videoId) {
+    if (ytPlayer && typeof ytPlayer.destroy === 'function') {
+        try { ytPlayer.destroy(); } catch (e) { }
+        ytPlayer = null;
+    }
+
+    const existingIframe = playerContainer.querySelector('iframe');
+    if (existingIframe) existingIframe.remove();
+
+    const params = new URLSearchParams({
+        autoplay: '1', controls: '1', modestbranding: '1',
+        rel: '0', playsinline: '1', enablejsapi: '1', fs: '1'
+    });
 
     const iframe = document.createElement('iframe');
     iframe.id = 'yt-iframe';
-    iframe.src = embedUrl;
+    iframe.src = `https://www.youtube.com/embed/${videoId}?${params.toString()}`;
     iframe.width = '100%';
     iframe.height = '100%';
     iframe.frameBorder = '0';
@@ -151,50 +322,14 @@ function loadVideo(videoId, startTime = 0, autoplay = true) {
     iframe.allowFullscreen = true;
     iframe.style.borderRadius = '10px';
 
-    // Insert before placeholder
     playerContainer.insertBefore(iframe, playerPlaceholder);
-
-    // Update now playing title
-    const song = queue[currentIndex];
-    if (song) {
-        nowPlayingTitle.textContent = song.title;
-    }
-
-    updatePlayPauseUI(autoplay);
-    renderQueue();
+    isPlayerReady = true;
+    showToast('Playing in fallback mode (sync limited)', 'info');
 }
 
 function updatePlayPauseUI(isPlaying) {
     playIcon.classList.toggle('hidden', isPlaying);
     pauseIcon.classList.toggle('hidden', !isPlaying);
-}
-
-// ── Iframe PostMessage Controls ─────────────────────────────────
-// YouTube iframes support postMessage API for basic controls
-
-function postPlayerCommand(command, args) {
-    const iframe = document.getElementById('yt-iframe');
-    if (!iframe || !iframe.contentWindow) return;
-
-    iframe.contentWindow.postMessage(JSON.stringify({
-        event: 'command',
-        func: command,
-        args: args || []
-    }), '*');
-}
-
-function playerPlay() {
-    postPlayerCommand('playVideo');
-    updatePlayPauseUI(true);
-}
-
-function playerPause() {
-    postPlayerCommand('pauseVideo');
-    updatePlayPauseUI(false);
-}
-
-function playerSeekTo(time) {
-    postPlayerCommand('seekTo', [time, true]);
 }
 
 // ── Extract YouTube Video ID ────────────────────────────────────
@@ -228,7 +363,6 @@ function setupEventListeners() {
         navigator.clipboard.writeText(roomCode).then(() => {
             showToast('Room code copied!', 'success');
         }).catch(() => {
-            // Fallback for mobile/non-HTTPS
             const textArea = document.createElement('textarea');
             textArea.value = roomCode;
             document.body.appendChild(textArea);
@@ -245,17 +379,18 @@ function setupEventListeners() {
         if (e.key === 'Enter') addSong();
     });
 
-    // Player controls — these use postMessage to control the iframe
+    // Player controls
     playPauseBtn.addEventListener('click', () => {
-        if (currentIndex < 0 || !currentVideoId) return;
-        // Toggle: we track state locally since we can't query iframe state reliably
-        const isCurrentlyPlaying = pauseIcon.classList.contains('hidden') === false;
-        if (isCurrentlyPlaying) {
-            playerPause();
-            socket.emit('sync-pause', { currentTime: 0 }); // approximate
-        } else {
-            playerPlay();
-            socket.emit('sync-play', { currentTime: 0 }); // approximate
+        if (!isPlayerReady || !ytPlayer || currentIndex < 0) return;
+        try {
+            const state = ytPlayer.getPlayerState();
+            if (state === YT.PlayerState.PLAYING) {
+                ytPlayer.pauseVideo();
+            } else {
+                ytPlayer.playVideo();
+            }
+        } catch (e) {
+            // Player not ready
         }
     });
 
@@ -354,39 +489,72 @@ function setupSocketListeners() {
 
         // Auto-play first song
         if (data.autoPlay && currentIndex >= 0) {
-            loadVideo(queue[currentIndex].videoId);
+            waitForAPI(() => {
+                loadVideo(queue[currentIndex].videoId);
+            });
         }
     });
 
-    // Sync play — reload iframe at correct time and autoplay
+    // Sync play
     socket.on('sync-play', (data) => {
         if (currentIndex < 0 || !currentVideoId) return;
-        if (data.currentTime > 0) {
-            // Reload the video at the synced timestamp with autoplay
-            loadVideo(currentVideoId, data.currentTime, true);
-        } else {
-            playerPlay();
+        isSyncing = true;
+
+        if (isPlayerReady && ytPlayer) {
+            try {
+                const diff = Math.abs(ytPlayer.getCurrentTime() - data.currentTime);
+                if (diff > 2) {
+                    ytPlayer.seekTo(data.currentTime, true);
+                }
+                ytPlayer.playVideo();
+                lastKnownTime = data.currentTime;
+            } catch (e) { }
         }
+        updatePlayPauseUI(true);
+
+        setTimeout(() => { isSyncing = false; }, 500);
     });
 
     // Sync pause
     socket.on('sync-pause', (data) => {
         if (currentIndex < 0 || !currentVideoId) return;
-        playerPause();
+        isSyncing = true;
+
+        if (isPlayerReady && ytPlayer) {
+            try {
+                ytPlayer.seekTo(data.currentTime, true);
+                ytPlayer.pauseVideo();
+                lastKnownTime = data.currentTime;
+            } catch (e) { }
+        }
+        updatePlayPauseUI(false);
+
+        setTimeout(() => { isSyncing = false; }, 500);
     });
 
-    // Sync seek
+    // Sync seek — the key new feature!
     socket.on('sync-seek', (data) => {
         if (!currentVideoId) return;
-        // Reload at new position
-        loadVideo(currentVideoId, data.currentTime, true);
+        isSyncing = true;
+
+        if (isPlayerReady && ytPlayer) {
+            try {
+                ytPlayer.seekTo(data.currentTime, true);
+                lastKnownTime = data.currentTime;
+                console.log(`⏩ Synced seek to ${data.currentTime.toFixed(1)}s`);
+            } catch (e) { }
+        }
+
+        setTimeout(() => { isSyncing = false; }, 1000);
     });
 
     // Play specific song
     socket.on('play-song', (data) => {
         currentIndex = data.index;
         if (queue[currentIndex]) {
-            loadVideo(queue[currentIndex].videoId);
+            waitForAPI(() => {
+                loadVideo(queue[currentIndex].videoId);
+            });
         }
     });
 
@@ -440,7 +608,6 @@ function renderQueue() {
 }
 
 function addChatMessage(data) {
-    // Remove empty state if present
     const emptyState = chatMessages.querySelector('.empty-state');
     if (emptyState) emptyState.remove();
 
@@ -461,7 +628,6 @@ function addChatMessage(data) {
 }
 
 function addSystemMessage(text) {
-    // Remove empty state if present
     const emptyState = chatMessages.querySelector('.empty-state');
     if (emptyState) emptyState.remove();
 
