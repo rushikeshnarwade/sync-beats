@@ -22,6 +22,7 @@ let seekCheckInterval = null;
 // ── DOM Elements ────────────────────────────────────────────────
 const roomCodeText = document.getElementById('room-code-text');
 const copyCodeBtn = document.getElementById('copy-code-btn');
+const shareBtn = document.getElementById('share-btn');
 const userCount = document.getElementById('user-count');
 const playerPlaceholder = document.getElementById('player-placeholder');
 const nowPlayingTitle = document.getElementById('now-playing-title');
@@ -32,6 +33,7 @@ const prevBtn = document.getElementById('prev-btn');
 const nextBtn = document.getElementById('next-btn');
 const urlInput = document.getElementById('youtube-url-input');
 const addSongBtn = document.getElementById('add-song-btn');
+const searchResults = document.getElementById('search-results');
 const queueList = document.getElementById('queue-list');
 const queueCount = document.getElementById('queue-count');
 const chatMessages = document.getElementById('chat-messages');
@@ -75,6 +77,7 @@ function init() {
                 roomCode = response.code;
                 roomCodeText.textContent = roomCode;
                 window.history.replaceState(null, '', `/room.html?room=${roomCode}`);
+                localStorage.setItem('syncbeats-last-room', roomCode);
                 addSystemMessage(`You created room ${roomCode}`);
                 updateUserList([username]);
             }
@@ -82,6 +85,7 @@ function init() {
     } else {
         socket.emit('join-room', { username, code: roomCode }, (response) => {
             if (response.success) {
+                localStorage.setItem('syncbeats-last-room', roomCode);
                 addSystemMessage(`You joined room ${roomCode}`);
                 if (response.state) {
                     queue = response.state.queue || [];
@@ -360,23 +364,63 @@ async function fetchVideoTitle(videoId) {
 function setupEventListeners() {
     // Copy room code
     copyCodeBtn.addEventListener('click', () => {
-        navigator.clipboard.writeText(roomCode).then(() => {
-            showToast('Room code copied!', 'success');
-        }).catch(() => {
-            const textArea = document.createElement('textarea');
-            textArea.value = roomCode;
-            document.body.appendChild(textArea);
-            textArea.select();
-            document.execCommand('copy');
-            textArea.remove();
-            showToast('Room code copied!', 'success');
-        });
+        copyToClipboard(roomCode);
+        showToast('Room code copied!', 'success');
+    });
+
+    // Share room link
+    shareBtn.addEventListener('click', () => {
+        const shareUrl = `${window.location.origin}/room.html?room=${roomCode}`;
+        const shareData = {
+            title: 'SyncBeats — Listen Together',
+            text: `Join my SyncBeats room! Code: ${roomCode}`,
+            url: shareUrl
+        };
+
+        // Use native share on mobile, clipboard on desktop
+        if (navigator.share) {
+            navigator.share(shareData).catch(() => { });
+        } else {
+            copyToClipboard(shareUrl);
+            showToast('Room link copied to clipboard!', 'success');
+        }
     });
 
     // Add song
     addSongBtn.addEventListener('click', addSong);
     urlInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') addSong();
+        if (e.key === 'Enter') {
+            // If search results visible and query is not a URL, add first result
+            if (!searchResults.classList.contains('hidden') && !extractVideoId(urlInput.value.trim())) {
+                const firstResult = searchResults.querySelector('.search-result-item');
+                if (firstResult) firstResult.click();
+                return;
+            }
+            addSong();
+        }
+    });
+
+    // Search as you type (debounced)
+    let searchTimeout = null;
+    urlInput.addEventListener('input', () => {
+        const value = urlInput.value.trim();
+        clearTimeout(searchTimeout);
+
+        // If it looks like a URL, don't search
+        if (!value || extractVideoId(value)) {
+            searchResults.classList.add('hidden');
+            return;
+        }
+
+        // Debounce: search after 400ms of no typing
+        searchTimeout = setTimeout(() => searchYouTube(value), 400);
+    });
+
+    // Close search results on click outside
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.search-container')) {
+            searchResults.classList.add('hidden');
+        }
     });
 
     // Player controls
@@ -427,7 +471,8 @@ async function addSong() {
 
     const videoId = extractVideoId(url);
     if (!videoId) {
-        showToast('Invalid YouTube URL. Try pasting a full YouTube link.', 'info');
+        // Not a URL — trigger search instead
+        searchYouTube(url);
         return;
     }
 
@@ -436,8 +481,50 @@ async function addSong() {
 
     socket.emit('add-to-queue', { videoId, title });
     urlInput.value = '';
+    searchResults.classList.add('hidden');
     addSongBtn.disabled = false;
     urlInput.focus();
+}
+
+async function searchYouTube(query) {
+    if (!query || query.length < 2) return;
+
+    try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+        const results = await res.json();
+
+        if (results.length === 0) {
+            searchResults.innerHTML = '<div class="search-empty">No results found</div>';
+            searchResults.classList.remove('hidden');
+            return;
+        }
+
+        searchResults.innerHTML = results.map(r => `
+            <div class="search-result-item" data-video-id="${r.videoId}" data-title="${escapeHtml(r.title)}">
+                <img class="search-thumb" src="${r.thumbnail}" alt="" loading="lazy">
+                <div class="search-result-info">
+                    <div class="search-result-title">${escapeHtml(r.title)}</div>
+                    <div class="search-result-meta">${escapeHtml(r.channel)} ${r.duration ? '· ' + r.duration : ''}</div>
+                </div>
+            </div>
+        `).join('');
+
+        // Click to add
+        searchResults.querySelectorAll('.search-result-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const videoId = item.dataset.videoId;
+                const title = item.dataset.title;
+                socket.emit('add-to-queue', { videoId, title });
+                urlInput.value = '';
+                searchResults.classList.add('hidden');
+                showToast('Added to queue!', 'success');
+            });
+        });
+
+        searchResults.classList.remove('hidden');
+    } catch (e) {
+        console.error('Search error:', e);
+    }
 }
 
 function sendChat() {
@@ -493,6 +580,13 @@ function setupSocketListeners() {
                 loadVideo(queue[currentIndex].videoId);
             });
         }
+    });
+
+    // Queue reordered
+    socket.on('queue-reordered', (data) => {
+        queue = data.queue;
+        currentIndex = data.currentIndex;
+        renderQueue();
     });
 
     // Sync play
@@ -589,6 +683,10 @@ function renderQueue() {
         <div class="queue-item-title">${escapeHtml(song.title)}</div>
         <div class="queue-item-by">Added by ${escapeHtml(song.addedBy)}</div>
       </div>
+      <div class="queue-item-actions">
+        ${i > 0 ? `<button class="reorder-btn" data-dir="up" data-index="${i}" title="Move up">▲</button>` : ''}
+        ${i < queue.length - 1 ? `<button class="reorder-btn" data-dir="down" data-index="${i}" title="Move down">▼</button>` : ''}
+      </div>
       ${i === currentIndex ? `
         <div class="playing-indicator">
           <span></span><span></span><span></span>
@@ -598,11 +696,24 @@ function renderQueue() {
 
     // Click to play song from queue
     queueList.querySelectorAll('.queue-item').forEach(item => {
-        item.addEventListener('click', () => {
+        item.addEventListener('click', (e) => {
+            // Don't trigger play if clicking reorder buttons
+            if (e.target.closest('.reorder-btn')) return;
             const index = parseInt(item.dataset.index);
             if (index !== currentIndex) {
                 socket.emit('play-song', { index });
             }
+        });
+    });
+
+    // Reorder buttons
+    queueList.querySelectorAll('.reorder-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const index = parseInt(btn.dataset.index);
+            const dir = btn.dataset.dir;
+            const toIndex = dir === 'up' ? index - 1 : index + 1;
+            socket.emit('reorder-queue', { fromIndex: index, toIndex });
         });
     });
 }
@@ -656,6 +767,27 @@ function showToast(message, type = 'info') {
     toast.textContent = message;
     toastContainer.appendChild(toast);
     setTimeout(() => toast.remove(), 3000);
+}
+
+function copyToClipboard(text) {
+    if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).catch(() => {
+            fallbackCopy(text);
+        });
+    } else {
+        fallbackCopy(text);
+    }
+}
+
+function fallbackCopy(text) {
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.opacity = '0';
+    document.body.appendChild(textArea);
+    textArea.select();
+    document.execCommand('copy');
+    textArea.remove();
 }
 
 function escapeHtml(str) {

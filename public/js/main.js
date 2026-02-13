@@ -13,8 +13,18 @@ if (savedName) {
     usernameInput.value = savedName;
 }
 
-// Auto-focus username input
-usernameInput.focus();
+// Pre-fill last room code from localStorage
+const lastRoom = localStorage.getItem('syncbeats-last-room');
+if (lastRoom) {
+    roomCodeInput.value = lastRoom;
+}
+
+// Auto-focus: if name is saved, focus room code; otherwise focus name
+if (savedName) {
+    roomCodeInput.focus();
+} else {
+    usernameInput.focus();
+}
 
 // Auto-uppercase room code
 roomCodeInput.addEventListener('input', () => {

@@ -11,6 +11,61 @@ const io = new Server(server, {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ── YouTube Search API Proxy ──────────────────────────────────────────
+// Uses Invidious instances (no API key needed) with Piped fallback
+const INVIDIOUS_INSTANCES = [
+    'https://vid.puffyan.us',
+    'https://inv.nadeko.net',
+    'https://invidious.nerdvpn.de'
+];
+
+app.get('/api/search', async (req, res) => {
+    const query = req.query.q;
+    if (!query) return res.json([]);
+
+    // Try Invidious instances
+    for (const instance of INVIDIOUS_INSTANCES) {
+        try {
+            const url = `${instance}/api/v1/search?q=${encodeURIComponent(query)}&type=video`;
+            const response = await fetch(url, { signal: AbortSignal.timeout(4000) });
+            if (!response.ok) continue;
+            const data = await response.json();
+            const results = data.slice(0, 8).map(v => ({
+                videoId: v.videoId,
+                title: v.title,
+                channel: v.author,
+                duration: formatDuration(v.lengthSeconds),
+                thumbnail: v.videoThumbnails?.[4]?.url || `https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg`
+            }));
+            return res.json(results);
+        } catch (e) { /* try next instance */ }
+    }
+
+    // Fallback: Piped API
+    try {
+        const url = `https://pipedapi.kavin.rocks/search?q=${encodeURIComponent(query)}&filter=videos`;
+        const response = await fetch(url, { signal: AbortSignal.timeout(4000) });
+        const data = await response.json();
+        const results = (data.items || []).slice(0, 8).map(v => ({
+            videoId: v.url?.replace('/watch?v=', ''),
+            title: v.title,
+            channel: v.uploaderName,
+            duration: formatDuration(v.duration),
+            thumbnail: v.thumbnail || `https://i.ytimg.com/vi/${v.url?.replace('/watch?v=', '')}/mqdefault.jpg`
+        }));
+        return res.json(results);
+    } catch (e) {
+        return res.json([]);
+    }
+});
+
+function formatDuration(seconds) {
+    if (!seconds || seconds < 0) return '';
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
 // ── In-memory room store ──────────────────────────────────────────────
 const rooms = new Map();
 
@@ -63,6 +118,11 @@ io.on('connection', (socket) => {
             return;
         }
         room.users.push({ id: socket.id, username: data.username });
+        // Cancel expiry timer if room was going to be cleaned up
+        if (room.cleanupTimer) {
+            clearTimeout(room.cleanupTimer);
+            room.cleanupTimer = null;
+        }
         socket.join(code);
         socket.roomCode = code;
         socket.username = data.username;
@@ -159,6 +219,32 @@ io.on('connection', (socket) => {
         io.to(socket.roomCode).emit('play-song', { index: room.currentIndex, by: socket.username });
     });
 
+    // Reorder queue
+    socket.on('reorder-queue', (data) => {
+        const room = rooms.get(socket.roomCode);
+        if (!room) return;
+        const { fromIndex, toIndex } = data;
+        if (fromIndex < 0 || toIndex < 0 || fromIndex >= room.queue.length || toIndex >= room.queue.length) return;
+
+        // Move the song
+        const [moved] = room.queue.splice(fromIndex, 1);
+        room.queue.splice(toIndex, 0, moved);
+
+        // Update currentIndex if it was affected
+        if (room.currentIndex === fromIndex) {
+            room.currentIndex = toIndex;
+        } else if (fromIndex < room.currentIndex && toIndex >= room.currentIndex) {
+            room.currentIndex--;
+        } else if (fromIndex > room.currentIndex && toIndex <= room.currentIndex) {
+            room.currentIndex++;
+        }
+
+        io.to(socket.roomCode).emit('queue-reordered', {
+            queue: room.queue,
+            currentIndex: room.currentIndex
+        });
+    });
+
     // Chat message
     socket.on('chat-message', (data) => {
         io.to(socket.roomCode).emit('chat-message', {
@@ -180,10 +266,18 @@ io.on('connection', (socket) => {
             users: room.users.map(u => u.username)
         });
 
-        // Delete room if empty
+        // Keep room alive for 30 min when empty so users can rejoin
         if (room.users.length === 0) {
-            rooms.delete(socket.roomCode);
-            console.log(`🗑️ Room ${socket.roomCode} deleted (empty)`);
+            // Clear any existing cleanup timer
+            if (room.cleanupTimer) clearTimeout(room.cleanupTimer);
+            room.cleanupTimer = setTimeout(() => {
+                const r = rooms.get(socket.roomCode);
+                if (r && r.users.length === 0) {
+                    rooms.delete(socket.roomCode);
+                    console.log(`🗑️ Room ${socket.roomCode} expired after 30 min`);
+                }
+            }, 30 * 60 * 1000); // 30 minutes
+            console.log(`⏳ Room ${socket.roomCode} is empty — will expire in 30 min`);
         }
 
         console.log(`🔌 ${socket.username} disconnected from room ${socket.roomCode}`);
