@@ -10,60 +10,117 @@ const io = new Server(server, {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json());
 
 // ── YouTube Search API Proxy ──────────────────────────────────────────
-// Uses Invidious instances (no API key needed) with Piped fallback
-const INVIDIOUS_INSTANCES = [
-    'https://vid.puffyan.us',
-    'https://inv.nadeko.net',
-    'https://invidious.nerdvpn.de'
-];
+// Uses YouTube's own InnerTube API (always available, no API key needed)
 
 app.get('/api/search', async (req, res) => {
     const query = req.query.q;
     if (!query) return res.json([]);
 
-    // Try Invidious instances
-    for (const instance of INVIDIOUS_INSTANCES) {
-        try {
-            const url = `${instance}/api/v1/search?q=${encodeURIComponent(query)}&type=video`;
-            const response = await fetch(url, { signal: AbortSignal.timeout(4000) });
-            if (!response.ok) continue;
-            const data = await response.json();
-            const results = data.slice(0, 8).map(v => ({
-                videoId: v.videoId,
-                title: v.title,
-                channel: v.author,
-                duration: formatDuration(v.lengthSeconds),
-                thumbnail: v.videoThumbnails?.[4]?.url || `https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg`
-            }));
-            return res.json(results);
-        } catch (e) { /* try next instance */ }
+    try {
+        // Method 1: YouTube InnerTube API
+        const results = await searchInnerTube(query);
+        if (results.length > 0) return res.json(results);
+    } catch (e) {
+        console.error('InnerTube search failed:', e.message);
     }
 
-    // Fallback: Piped API
     try {
-        const url = `https://pipedapi.kavin.rocks/search?q=${encodeURIComponent(query)}&filter=videos`;
-        const response = await fetch(url, { signal: AbortSignal.timeout(4000) });
-        const data = await response.json();
-        const results = (data.items || []).slice(0, 8).map(v => ({
-            videoId: v.url?.replace('/watch?v=', ''),
-            title: v.title,
-            channel: v.uploaderName,
-            duration: formatDuration(v.duration),
-            thumbnail: v.thumbnail || `https://i.ytimg.com/vi/${v.url?.replace('/watch?v=', '')}/mqdefault.jpg`
-        }));
+        // Method 2: Scrape YouTube search HTML
+        const results = await searchYouTubeHTML(query);
         return res.json(results);
     } catch (e) {
+        console.error('HTML search failed:', e.message);
         return res.json([]);
     }
 });
 
-function formatDuration(seconds) {
-    if (!seconds || seconds < 0) return '';
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}:${s.toString().padStart(2, '0')}`;
+async function searchInnerTube(query) {
+    const response = await fetch('https://www.youtube.com/youtubei/v1/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            context: {
+                client: {
+                    clientName: 'WEB',
+                    clientVersion: '2.20240101.00.00',
+                    hl: 'en',
+                    gl: 'US'
+                }
+            },
+            query: query
+        }),
+        signal: AbortSignal.timeout(6000)
+    });
+
+    if (!response.ok) throw new Error(`InnerTube: ${response.status}`);
+    const data = await response.json();
+
+    // Navigate the nested response structure
+    const contents = data?.contents?.twoColumnSearchResultsRenderer?.primaryContents
+        ?.sectionListRenderer?.contents?.[0]?.itemSectionRenderer?.contents || [];
+
+    const results = [];
+    for (const item of contents) {
+        const video = item.videoRenderer;
+        if (!video || !video.videoId) continue;
+
+        const title = video.title?.runs?.map(r => r.text).join('') || '';
+        const channel = video.ownerText?.runs?.map(r => r.text).join('') || '';
+        const duration = video.lengthText?.simpleText || '';
+
+        results.push({
+            videoId: video.videoId,
+            title,
+            channel,
+            duration,
+            thumbnail: `https://i.ytimg.com/vi/${video.videoId}/mqdefault.jpg`
+        });
+
+        if (results.length >= 8) break;
+    }
+    return results;
+}
+
+async function searchYouTubeHTML(query) {
+    const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+    const response = await fetch(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept-Language': 'en-US,en;q=0.9'
+        },
+        signal: AbortSignal.timeout(6000)
+    });
+
+    if (!response.ok) throw new Error(`YT HTML: ${response.status}`);
+    const html = await response.text();
+
+    // Extract ytInitialData JSON from the page
+    const match = html.match(/var ytInitialData = ({.*?});<\/script>/s);
+    if (!match) throw new Error('Could not parse YouTube page');
+
+    const data = JSON.parse(match[1]);
+    const contents = data?.contents?.twoColumnSearchResultsRenderer?.primaryContents
+        ?.sectionListRenderer?.contents?.[0]?.itemSectionRenderer?.contents || [];
+
+    const results = [];
+    for (const item of contents) {
+        const video = item.videoRenderer;
+        if (!video || !video.videoId) continue;
+
+        results.push({
+            videoId: video.videoId,
+            title: video.title?.runs?.map(r => r.text).join('') || '',
+            channel: video.ownerText?.runs?.map(r => r.text).join('') || '',
+            duration: video.lengthText?.simpleText || '',
+            thumbnail: `https://i.ytimg.com/vi/${video.videoId}/mqdefault.jpg`
+        });
+
+        if (results.length >= 8) break;
+    }
+    return results;
 }
 
 // ── In-memory room store ──────────────────────────────────────────────
