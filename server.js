@@ -225,6 +225,26 @@ io.on('connection', (socket) => {
         console.log(`🎶 Song added to ${socket.roomCode}: ${data.title}`);
     });
 
+    // Load saved playlist (bulk add)
+    socket.on('load-playlist', (data) => {
+        const room = rooms.get(socket.roomCode);
+        if (!room || !data.songs || !Array.isArray(data.songs)) return;
+
+        for (const song of data.songs) {
+            room.queue.push({ videoId: song.videoId, title: song.title, addedBy: socket.username });
+        }
+
+        const autoPlay = room.currentIndex === -1 && room.queue.length > 0;
+        if (autoPlay) room.currentIndex = 0;
+
+        io.to(socket.roomCode).emit('queue-updated', {
+            queue: room.queue,
+            currentIndex: room.currentIndex,
+            autoPlay
+        });
+        console.log(`📂 Playlist loaded in ${socket.roomCode}: ${data.songs.length} songs`);
+    });
+
     // Sync play
     socket.on('sync-play', (data) => {
         const room = rooms.get(socket.roomCode);

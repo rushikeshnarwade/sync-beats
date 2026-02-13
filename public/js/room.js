@@ -80,6 +80,7 @@ function init() {
                 localStorage.setItem('syncbeats-last-room', roomCode);
                 addSystemMessage(`You created room ${roomCode}`);
                 updateUserList([username]);
+                loadPendingPlaylist();
             }
         });
     } else {
@@ -101,6 +102,7 @@ function init() {
                         });
                     }
                 }
+                loadPendingPlaylist();
             } else {
                 alert(response.error || 'Failed to join room');
                 window.location.href = '/';
@@ -424,6 +426,29 @@ function setupEventListeners() {
         if (!e.target.closest('.search-container')) {
             searchResults.classList.add('hidden');
         }
+    });
+
+    // Save playlist
+    document.getElementById('save-playlist-btn').addEventListener('click', () => {
+        if (queue.length === 0) {
+            showToast('Queue is empty — add songs first!', 'info');
+            return;
+        }
+
+        const defaultName = queue[0]?.title ? `Playlist — ${queue[0].title}` : 'My Playlist';
+        const name = prompt('Name your playlist:', defaultName);
+        if (!name) return;
+
+        const playlists = JSON.parse(localStorage.getItem('syncbeats-playlists') || '[]');
+        playlists.push({
+            id: Date.now().toString(),
+            name: name.trim(),
+            songs: queue.map(s => ({ videoId: s.videoId, title: s.title })),
+            roomCode: roomCode,
+            createdAt: new Date().toISOString()
+        });
+        localStorage.setItem('syncbeats-playlists', JSON.stringify(playlists));
+        showToast(`💾 "${name}" saved! (${queue.length} songs)`, 'success');
     });
 
     // Player controls
@@ -785,6 +810,23 @@ function copyToClipboard(text) {
         });
     } else {
         fallbackCopy(text);
+    }
+}
+
+// ── Load Pending Playlist ───────────────────────────────────────
+function loadPendingPlaylist() {
+    const pendingPlaylist = sessionStorage.getItem('syncbeats-pending-playlist');
+    if (!pendingPlaylist) return;
+
+    sessionStorage.removeItem('syncbeats-pending-playlist');
+    try {
+        const playlist = JSON.parse(pendingPlaylist);
+        if (playlist.songs && playlist.songs.length > 0) {
+            socket.emit('load-playlist', { songs: playlist.songs });
+            showToast(`📂 Loading "${playlist.name}" (${playlist.songs.length} songs)`, 'success');
+        }
+    } catch (e) {
+        console.error('Failed to load playlist:', e);
     }
 }
 

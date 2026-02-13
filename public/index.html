@@ -66,6 +66,30 @@
       </div>
     </div>
 
+    <!-- Saved Playlists -->
+    <div class="saved-playlists-section hidden" id="playlists-section">
+      <h2 class="section-title">Your Playlists</h2>
+      <div class="playlists-grid" id="playlists-grid"></div>
+    </div>
+
+    <!-- Playlist Load Modal -->
+    <div class="modal-overlay hidden" id="playlist-modal">
+      <div class="glass-card modal-content">
+        <h3 id="modal-playlist-name"></h3>
+        <p class="modal-subtitle" id="modal-playlist-info"></p>
+        <div class="modal-actions">
+          <button class="btn btn-primary" id="modal-new-room-btn">
+            <span>New Room</span>
+          </button>
+          <button class="btn btn-secondary" id="modal-rejoin-btn">
+            <span>Rejoin Original Room</span>
+          </button>
+        </div>
+        <button class="modal-close" id="modal-close-btn">✕</button>
+        <button class="modal-delete" id="modal-delete-btn" title="Delete playlist">🗑️ Delete</button>
+      </div>
+    </div>
+
     <!-- Error display -->
     <div id="error-toast" class="error-toast hidden"></div>
   </main>

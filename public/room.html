@@ -158,7 +158,16 @@
             <div class="sidebar-panel glass-card" id="queue-panel">
                 <div class="panel-header">
                     <h3>Up Next</h3>
-                    <span class="queue-count" id="queue-count">0 songs</span>
+                    <div class="panel-header-actions">
+                        <span class="queue-count" id="queue-count">0 songs</span>
+                        <button id="save-playlist-btn" class="icon-btn" title="Save playlist">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
+                                <polyline points="17 21 17 13 7 13 7 21" />
+                                <polyline points="7 3 7 8 15 8" />
+                            </svg>
+                        </button>
+                    </div>
                 </div>
                 <div class="queue-list" id="queue-list">
                     <div class="empty-state">
