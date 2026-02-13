@@ -197,6 +197,9 @@ function loadVideo(videoId, startTime = 0, autoplay = true) {
 
                 // Start seek detection polling
                 startSeekDetection();
+
+                // Setup Media Session for background/lock screen controls
+                updateMediaSession();
                 console.log('✅ Player ready, video:', videoId);
             },
             onStateChange: (event) => {
@@ -659,6 +662,12 @@ function setupSocketListeners() {
             unreadChat++;
             chatBadge.textContent = unreadChat;
             chatBadge.classList.remove('hidden');
+
+            // Show popup notification
+            if (data.username !== username) {
+                const preview = data.message.length > 50 ? data.message.slice(0, 50) + '…' : data.message;
+                showChatPopup(data.username, preview);
+            }
         }
     });
 }
@@ -798,3 +807,87 @@ function escapeHtml(str) {
 
 // ── Start ──────────────────────────────────────────────────────
 init();
+
+// ── Chat Popup Notification ─────────────────────────────────────
+function showChatPopup(sender, preview) {
+    // Remove any existing popup
+    const existing = document.querySelector('.chat-popup');
+    if (existing) existing.remove();
+
+    const popup = document.createElement('div');
+    popup.className = 'chat-popup';
+    popup.innerHTML = `
+        <div class="chat-popup-header">
+            <span class="chat-popup-avatar">${sender.charAt(0).toUpperCase()}</span>
+            <span class="chat-popup-name">${escapeHtml(sender)}</span>
+        </div>
+        <div class="chat-popup-text">${escapeHtml(preview)}</div>
+    `;
+
+    // Click to open chat tab
+    popup.addEventListener('click', () => {
+        switchTab('chat');
+        popup.remove();
+    });
+
+    toastContainer.appendChild(popup);
+    setTimeout(() => {
+        if (popup.parentNode) popup.remove();
+    }, 4000);
+}
+
+// ── Media Session API (lock screen / background controls) ─────────
+function updateMediaSession() {
+    if (!('mediaSession' in navigator)) return;
+
+    const song = queue[currentIndex];
+    if (!song) return;
+
+    navigator.mediaSession.metadata = new MediaMetadata({
+        title: song.title,
+        artist: song.addedBy ? `Added by ${song.addedBy}` : 'SyncBeats',
+        album: 'SyncBeats Room',
+        artwork: currentVideoId ? [
+            { src: `https://i.ytimg.com/vi/${currentVideoId}/mqdefault.jpg`, sizes: '320x180', type: 'image/jpeg' },
+            { src: `https://i.ytimg.com/vi/${currentVideoId}/hqdefault.jpg`, sizes: '480x360', type: 'image/jpeg' }
+        ] : []
+    });
+
+    navigator.mediaSession.setActionHandler('play', () => {
+        if (ytPlayer) ytPlayer.playVideo();
+    });
+    navigator.mediaSession.setActionHandler('pause', () => {
+        if (ytPlayer) ytPlayer.pauseVideo();
+    });
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+        if (currentIndex > 0) socket.emit('play-song', { index: currentIndex - 1 });
+    });
+    navigator.mediaSession.setActionHandler('nexttrack', () => {
+        if (currentIndex < queue.length - 1) socket.emit('next-song');
+    });
+}
+
+// ── Background Audio Keep-Alive ──────────────────────────────────
+// A silent audio context keeps the browser audio session active,
+// preventing YouTube from pausing when the tab is backgrounded.
+let bgAudioCtx = null;
+function initBackgroundAudio() {
+    if (bgAudioCtx) return;
+    try {
+        bgAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        // Create a silent oscillator
+        const osc = bgAudioCtx.createOscillator();
+        const gain = bgAudioCtx.createGain();
+        gain.gain.value = 0.001; // Nearly silent
+        osc.connect(gain);
+        gain.connect(bgAudioCtx.destination);
+        osc.start();
+    } catch (e) {
+        // AudioContext may not be available
+    }
+}
+
+// Start the background audio on first user interaction
+document.addEventListener('click', () => {
+    initBackgroundAudio();
+}, { once: true });
