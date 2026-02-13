@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SyncBeats — Listen Together</title>
+  <meta name="description" content="Listen to music together with friends in real-time. Create a room, share the code, and vibe together.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="home-page">
+  <!-- Animated background -->
+  <div class="bg-animation">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+  </div>
+
+  <main class="home-container">
+    <!-- Logo & Title -->
+    <div class="hero-section">
+      <div class="logo-icon">
+        <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="32" cy="32" r="30" stroke="url(#grad)" stroke-width="3" fill="none"/>
+          <circle cx="32" cy="32" r="20" stroke="url(#grad)" stroke-width="2" fill="none" opacity="0.5"/>
+          <circle cx="32" cy="32" r="8" fill="url(#grad)"/>
+          <path d="M26 20 L44 32 L26 44 Z" fill="white" opacity="0.9"/>
+          <defs>
+            <linearGradient id="grad" x1="0" y1="0" x2="64" y2="64">
+              <stop offset="0%" stop-color="#a855f7"/>
+              <stop offset="50%" stop-color="#06b6d4"/>
+              <stop offset="100%" stop-color="#ec4899"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <h1 class="app-title">Sync<span class="gradient-text">Beats</span></h1>
+      <p class="app-tagline">Listen to music together, in perfect sync</p>
+    </div>
+
+    <!-- Username Input -->
+    <div class="username-section glass-card">
+      <label for="username-input">Your Name</label>
+      <input type="text" id="username-input" placeholder="Enter your name..." maxlength="20" autocomplete="off">
+    </div>
+
+    <!-- Actions -->
+    <div class="action-cards">
+      <div class="glass-card action-card" id="create-card">
+        <div class="card-icon">🎵</div>
+        <h2>Create Room</h2>
+        <p>Start a new listening session and invite your friend</p>
+        <button id="create-room-btn" class="btn btn-primary">
+          <span>Create Room</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+      </div>
+
+      <div class="divider-text">or</div>
+
+      <div class="glass-card action-card" id="join-card">
+        <div class="card-icon">🎧</div>
+        <h2>Join Room</h2>
+        <p>Enter a room code to join your friend's session</p>
+        <div class="join-input-group">
+          <input type="text" id="room-code-input" placeholder="Enter room code" maxlength="6" autocomplete="off" spellcheck="false">
+          <button id="join-room-btn" class="btn btn-secondary">
+            <span>Join</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Error display -->
+    <div id="error-toast" class="error-toast hidden"></div>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/main.js"></script>
+</body>
+</html>
